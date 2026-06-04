@@ -18,25 +18,29 @@ python main.py compress input.txt output.llmz
 python main.py decompress output.llmz restored.txt
 ```
 
-The archive stores a JSON header with:
+The archive stores a compact binary header with:
 
 - original token count
 - original byte count
-- original SHA256
-- model SHA256
-- tokenizer SHA256
+- payload byte count
 - arithmetic coding frequency precision
 - max context length
+- BOS token id
+- logit mode
+- CRC32
 
-The decoder verifies the model/tokenizer hashes and the restored text hash.
+The decoder verifies restored bytes with CRC32. The model and tokenizer are
+assumed to be pre-shared by the encoder and decoder.
 
 ## Current Limits
 
 - UTF-8 text only.
 - The Parameter Golf `sp1024` tokenizer normalizes some whitespace, including
-  trailing newlines, leading spaces, and repeated spaces. `llmzip` stores a
-  compressed byte-sidecar patch so decoded archives still restore the original
-  bytes exactly.
+  trailing newlines, leading spaces, and repeated spaces. `llmzip` rejects
+  inputs that do not round-trip byte-exactly through this tokenizer. Normalize
+  whitespace first or switch to a byte-level tokenizer.
 - Full-vocabulary arithmetic coding.
-- No KV cache yet, so long files are slow.
+- KV cache is used during token-by-token coding. The implementation rebuilds
+  the cache when the sliding context window advances so RoPE positions match
+  the original full-prefix behavior.
 - The model is assumed to be pre-shared and is not included in `.llmz`.

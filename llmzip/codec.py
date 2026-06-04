@@ -15,9 +15,16 @@ from .arithmetic import ArithmeticDecoder, ArithmeticEncoder, BitReader, BitWrit
 from .model import GPT, load_baseline_model
 
 
-MAGIC = b"LLMZ1"
+MAGIC_V1 = b"LLMZ1"
+MAGIC = b"LLMZ2"
 DEFAULT_TOTAL_FREQ = 1 << 20
 DEFAULT_CONTEXT = 1024
+FLAG_CRC32 = 1 << 0
+LOGIT_MODE_TO_ID = {
+    "full-prefix-v1": 0,
+    "kv-cache-v1": 1,
+}
+ID_TO_LOGIT_MODE = {value: key for key, value in LOGIT_MODE_TO_ID.items()}
 
 
 def sha256_file(path: str | Path) -> str:
@@ -30,6 +37,32 @@ def sha256_file(path: str | Path) -> str:
 
 def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def encode_varint(value: int) -> bytes:
+    if value < 0:
+        raise ValueError(f"varint cannot encode negative value: {value}")
+    out = bytearray()
+    while value >= 0x80:
+        out.append((value & 0x7F) | 0x80)
+        value >>= 7
+    out.append(value)
+    return bytes(out)
+
+
+def read_varint(f) -> int:
+    shift = 0
+    value = 0
+    for _ in range(10):
+        raw = f.read(1)
+        if not raw:
+            raise ValueError("Truncated varint")
+        byte = raw[0]
+        value |= (byte & 0x7F) << shift
+        if byte < 0x80:
+            return value
+        shift += 7
+    raise ValueError("varint is too long")
 
 
 def logits_to_cumulative(logits: torch.Tensor, total_freq: int = DEFAULT_TOTAL_FREQ) -> list[int]:
@@ -69,6 +102,61 @@ def next_logits(model: GPT, prefix: list[int], device: torch.device, max_context
     window = prefix[-max_context:]
     input_ids = torch.tensor([window], dtype=torch.long, device=device)
     return model.forward_logits(input_ids)[0, -1]
+
+
+class CachedLogitPredictor:
+    def __init__(self, model: GPT, *, bos_id: int, max_context: int):
+        self.model = model
+        self.device = next(model.parameters()).device
+        self.bos_id = bos_id
+        self.max_context = max_context
+        self.prefix = [bos_id]
+        self.caches = None
+        self.position = 0
+        self._last_logits: torch.Tensor | None = None
+        self._feed(bos_id)
+
+    @torch.inference_mode()
+    def _feed(self, token: int) -> torch.Tensor:
+        input_id = torch.tensor([token], dtype=torch.long, device=self.device)
+        logits, self.caches = self.model.forward_logits_step(input_id, self.caches, self.position)
+        self.position += 1
+        self._last_logits = logits[0]
+        return self._last_logits
+
+    def _rebuild(self) -> None:
+        window = self.prefix[-self.max_context :]
+        self.caches = None
+        self.position = 0
+        self._last_logits = None
+        for token in window:
+            self._feed(token)
+
+    def next(self) -> torch.Tensor:
+        if self._last_logits is None:
+            raise RuntimeError("CachedLogitPredictor has not been initialized")
+        return self._last_logits
+
+    def append(self, token: int) -> None:
+        self.prefix.append(token)
+        if len(self.prefix) > self.max_context:
+            self._rebuild()
+        else:
+            self._feed(token)
+
+
+class LegacyLogitPredictor:
+    def __init__(self, model: GPT, *, bos_id: int, max_context: int):
+        self.model = model
+        self.device = next(model.parameters()).device
+        self.prefix = [bos_id]
+        self.max_context = max_context
+
+    def next(self) -> torch.Tensor:
+        return next_logits(self.model, self.prefix, self.device, self.max_context)
+
+    def append(self, token: int) -> None:
+        self.prefix.append(token)
 
 
 def load_tokenizer(tokenizer_path: str | Path) -> spm.SentencePieceProcessor:
@@ -120,34 +208,35 @@ def compress_bytes(
     tokens = tokenizer.encode(text, out_type=int)
     roundtrip_text = tokenizer.decode(tokens)
     normalized_data = roundtrip_text.encode("utf-8")
-    sidecar = make_sidecar(normalized_data, data)
+    if normalized_data != data:
+        raise ValueError(
+            "Tokenizer is not byte-exact for this input. Normalize the input whitespace "
+            "or switch to a byte-level tokenizer before compressing."
+        )
+    sidecar = b""
     bos_id = int(tokenizer.bos_id())
     if bos_id < 0:
         raise ValueError("Tokenizer must define a BOS token")
 
     writer = BitWriter()
     encoder = ArithmeticEncoder(writer)
-    device = next(model.parameters()).device
-    prefix = [bos_id]
+    logit_mode = "kv-cache-v1"
+    predictor = CachedLogitPredictor(model, bos_id=bos_id, max_context=max_context)
     for token in tokens:
-        cumulative = logits_to_cumulative(next_logits(model, prefix, device, max_context), total_freq)
+        cumulative = logits_to_cumulative(predictor.next(), total_freq)
         encoder.encode(int(token), cumulative)
-        prefix.append(int(token))
+        predictor.append(int(token))
     payload = encoder.finish()
     header = {
-        "version": 1,
+        "version": 2,
         "encoding": "utf-8",
         "token_count": len(tokens),
         "byte_count": len(data),
-        "normalized_byte_count": len(normalized_data),
-        "sha256": sha256_bytes(data),
-        "normalized_sha256": sha256_bytes(normalized_data),
-        "model_sha256": sha256_file(model_path),
-        "tokenizer_sha256": sha256_file(tokenizer_path),
+        "crc32": zlib.crc32(data) & 0xFFFFFFFF,
         "total_freq": total_freq,
         "max_context": max_context,
         "bos_id": bos_id,
-        "sidecar_codec": "zlib-json-diff-v1" if sidecar else "none",
+        "logit_mode": logit_mode,
     }
     return payload, header, sidecar
 
@@ -163,66 +252,142 @@ def decompress_bytes(
     token_count = int(header["token_count"])
     bos_id = int(header["bos_id"])
 
-    reader = BitReader(payload)
-    decoder = ArithmeticDecoder(reader)
-    device = next(model.parameters()).device
-    prefix = [bos_id]
-    tokens: list[int] = []
-    for _ in range(token_count):
-        cumulative = logits_to_cumulative(next_logits(model, prefix, device, max_context), total_freq)
-        token = decoder.decode(cumulative)
-        tokens.append(token)
-        prefix.append(token)
+    def decode_with_mode(logit_mode: str) -> bytes:
+        reader = BitReader(payload)
+        decoder = ArithmeticDecoder(reader)
+        if logit_mode == "kv-cache-v1":
+            predictor = CachedLogitPredictor(model, bos_id=bos_id, max_context=max_context)
+        elif logit_mode == "full-prefix-v1":
+            predictor = LegacyLogitPredictor(model, bos_id=bos_id, max_context=max_context)
+        else:
+            raise ValueError(f"Unsupported logit_mode: {logit_mode}")
 
-    text = tokenizer.decode(tokens)
-    normalized_data = text.encode("utf-8")
-    if len(normalized_data) != int(header["normalized_byte_count"]):
-        raise ValueError(
-            f"Decoded normalized byte length mismatch: {len(normalized_data)} != {header['normalized_byte_count']}"
-        )
-    normalized_digest = sha256_bytes(normalized_data)
-    if normalized_digest != header["normalized_sha256"]:
-        raise ValueError(f"Decoded normalized SHA256 mismatch: {normalized_digest} != {header['normalized_sha256']}")
-    data = apply_sidecar(normalized_data, header.get("_sidecar", b""))
-    if len(data) != int(header["byte_count"]):
-        raise ValueError(f"Decoded byte length mismatch: {len(data)} != {header['byte_count']}")
-    digest = sha256_bytes(data)
-    if digest != header["sha256"]:
-        raise ValueError(f"Decoded SHA256 mismatch: {digest} != {header['sha256']}")
-    return data
+        tokens: list[int] = []
+        for _ in range(token_count):
+            cumulative = logits_to_cumulative(predictor.next(), total_freq)
+            token = decoder.decode(cumulative)
+            tokens.append(token)
+            predictor.append(token)
+
+        text = tokenizer.decode(tokens)
+        normalized_data = text.encode("utf-8")
+        if "normalized_byte_count" in header and len(normalized_data) != int(header["normalized_byte_count"]):
+            raise ValueError(
+                f"Decoded normalized byte length mismatch: {len(normalized_data)} != {header['normalized_byte_count']}"
+            )
+        normalized_digest = sha256_bytes(normalized_data) if "normalized_sha256" in header else None
+        if "normalized_sha256" in header and normalized_digest != header["normalized_sha256"]:
+            raise ValueError(f"Decoded normalized SHA256 mismatch: {normalized_digest} != {header['normalized_sha256']}")
+        data = apply_sidecar(normalized_data, header.get("_sidecar", b""))
+        if len(data) != int(header["byte_count"]):
+            raise ValueError(f"Decoded byte length mismatch: {len(data)} != {header['byte_count']}")
+        if "crc32" in header:
+            crc32 = zlib.crc32(data) & 0xFFFFFFFF
+            if crc32 != int(header["crc32"]):
+                raise ValueError(f"Decoded CRC32 mismatch: {crc32} != {header['crc32']}")
+        digest = sha256_bytes(data) if "sha256" in header else None
+        if "sha256" in header and digest != header["sha256"]:
+            raise ValueError(f"Decoded SHA256 mismatch: {digest} != {header['sha256']}")
+        return data
+
+    if "logit_mode" in header:
+        return decode_with_mode(str(header["logit_mode"]))
+
+    errors = []
+    for logit_mode in ("full-prefix-v1", "kv-cache-v1"):
+        try:
+            return decode_with_mode(logit_mode)
+        except ValueError as exc:
+            errors.append(f"{logit_mode}: {exc}")
+    raise ValueError("Could not decode archive with any legacy logit mode: " + "; ".join(errors))
 
 
 def write_archive(path: str | Path, payload: bytes, header: dict, sidecar: bytes = b"") -> None:
+    if sidecar:
+        raise ValueError("LLMZ2 does not support sidecar data")
     header = dict(header)
     header["payload_bytes"] = len(payload)
-    header["sidecar_bytes"] = len(sidecar)
-    header_bytes = json.dumps(header, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    logit_mode = str(header["logit_mode"])
+    if logit_mode not in LOGIT_MODE_TO_ID:
+        raise ValueError(f"Unsupported logit_mode: {logit_mode}")
+    flags = FLAG_CRC32 if "crc32" in header else 0
     with open(path, "wb") as f:
         f.write(MAGIC)
-        f.write(struct.pack(">I", len(header_bytes)))
-        f.write(header_bytes)
+        f.write(bytes([flags, LOGIT_MODE_TO_ID[logit_mode]]))
+        f.write(encode_varint(int(header["token_count"])))
+        f.write(encode_varint(int(header["byte_count"])))
+        f.write(encode_varint(len(payload)))
+        f.write(encode_varint(int(header["total_freq"])))
+        f.write(encode_varint(int(header["max_context"])))
+        f.write(encode_varint(int(header["bos_id"])))
+        if flags & FLAG_CRC32:
+            f.write(struct.pack(">I", int(header["crc32"])))
         f.write(payload)
-        f.write(sidecar)
 
 
 def read_archive(path: str | Path) -> tuple[bytes, dict]:
     with open(path, "rb") as f:
         magic = f.read(len(MAGIC))
+        if magic == MAGIC_V1:
+            header_len = struct.unpack(">I", f.read(4))[0]
+            header = json.loads(f.read(header_len).decode("utf-8"))
+            payload_len = int(header.get("payload_bytes", -1))
+            sidecar_len = int(header.get("sidecar_bytes", 0))
+            if payload_len < 0:
+                payload = f.read()
+                sidecar = b""
+            else:
+                payload = f.read(payload_len)
+                sidecar = f.read(sidecar_len)
+                if len(payload) != payload_len or len(sidecar) != sidecar_len:
+                    raise ValueError(f"Truncated llmzip archive: {path}")
+            header["_sidecar"] = sidecar
+            return payload, header
+
         if magic != MAGIC:
             raise ValueError(f"Not an llmzip archive: {path}")
-        header_len = struct.unpack(">I", f.read(4))[0]
-        header = json.loads(f.read(header_len).decode("utf-8"))
-        payload_len = int(header.get("payload_bytes", -1))
-        sidecar_len = int(header.get("sidecar_bytes", 0))
-        if payload_len < 0:
-            payload = f.read()
-            sidecar = b""
-        else:
-            payload = f.read(payload_len)
-            sidecar = f.read(sidecar_len)
-            if len(payload) != payload_len or len(sidecar) != sidecar_len:
+
+        flags_raw = f.read(1)
+        logit_mode_raw = f.read(1)
+        if not flags_raw or not logit_mode_raw:
+            raise ValueError(f"Truncated llmzip archive: {path}")
+        flags = flags_raw[0]
+        logit_mode_id = logit_mode_raw[0]
+        if logit_mode_id not in ID_TO_LOGIT_MODE:
+            raise ValueError(f"Unsupported logit mode id: {logit_mode_id}")
+
+        token_count = read_varint(f)
+        byte_count = read_varint(f)
+        payload_len = read_varint(f)
+        total_freq = read_varint(f)
+        max_context = read_varint(f)
+        bos_id = read_varint(f)
+        header = {
+            "version": 2,
+            "encoding": "utf-8",
+            "token_count": token_count,
+            "byte_count": byte_count,
+            "payload_bytes": payload_len,
+            "sidecar_bytes": 0,
+            "total_freq": total_freq,
+            "max_context": max_context,
+            "bos_id": bos_id,
+            "logit_mode": ID_TO_LOGIT_MODE[logit_mode_id],
+            "_sidecar": b"",
+        }
+        if flags & FLAG_CRC32:
+            crc_raw = f.read(4)
+            if len(crc_raw) != 4:
                 raise ValueError(f"Truncated llmzip archive: {path}")
-        header["_sidecar"] = sidecar
+            header["crc32"] = struct.unpack(">I", crc_raw)[0]
+        unknown_flags = flags & ~FLAG_CRC32
+        if unknown_flags:
+            raise ValueError(f"Unsupported archive flags: {unknown_flags}")
+        payload = f.read(payload_len)
+        if len(payload) != payload_len:
+            raise ValueError(f"Truncated llmzip archive: {path}")
+        if f.read(1):
+            raise ValueError(f"Unexpected trailing bytes in llmzip archive: {path}")
     return payload, header
 
 
@@ -251,10 +416,10 @@ def compress_file(
     archive_size = Path(output_path).stat().st_size
     header["archive_bytes"] = archive_size
     header["payload_bytes"] = len(payload)
-    header["sidecar_bytes"] = len(sidecar)
+    header["sidecar_bytes"] = 0
     header["bpb_file"] = archive_size * 8 / max(len(data), 1)
     header["bpb_payload"] = len(payload) * 8 / max(len(data), 1)
-    header["bpb_payload_plus_sidecar"] = (len(payload) + len(sidecar)) * 8 / max(len(data), 1)
+    header["bpb_payload_plus_sidecar"] = len(payload) * 8 / max(len(data), 1)
     return header
 
 
@@ -268,9 +433,9 @@ def decompress_file(
     model = load_baseline_model(checkpoint_path)
     tokenizer = load_tokenizer(tokenizer_path)
     payload, header = read_archive(input_path)
-    if header.get("model_sha256") != sha256_file(checkpoint_path):
+    if "model_sha256" in header and header.get("model_sha256") != sha256_file(checkpoint_path):
         raise ValueError("Checkpoint hash does not match archive header")
-    if header.get("tokenizer_sha256") != sha256_file(tokenizer_path):
+    if "tokenizer_sha256" in header and header.get("tokenizer_sha256") != sha256_file(tokenizer_path):
         raise ValueError("Tokenizer hash does not match archive header")
     data = decompress_bytes(payload, header, model, tokenizer)
     Path(output_path).write_bytes(data)

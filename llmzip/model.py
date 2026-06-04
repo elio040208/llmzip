@@ -31,7 +31,7 @@ class Rotary(nn.Module):
         if (
             self._cos_cached is None
             or self._sin_cached is None
-            or self._seq_len_cached != seq_len
+            or self._seq_len_cached < seq_len
             or self._cos_cached.device != device
         ):
             t = torch.arange(seq_len, device=device, dtype=self.inv_freq.dtype)
@@ -39,7 +39,11 @@ class Rotary(nn.Module):
             self._cos_cached = freqs.cos()[None, None, :, :]
             self._sin_cached = freqs.sin()[None, None, :, :]
             self._seq_len_cached = seq_len
-        return self._cos_cached.to(dtype=dtype), self._sin_cached.to(dtype=dtype)
+        return self._cos_cached[:, :, :seq_len, :].to(dtype=dtype), self._sin_cached[:, :, :seq_len, :].to(dtype=dtype)
+
+    def at_position(self, position: int, device: torch.device, dtype: torch.dtype) -> tuple[Tensor, Tensor]:
+        cos, sin = self.forward(position + 1, device, dtype)
+        return cos[:, :, position : position + 1, :], sin[:, :, position : position + 1, :]
 
 
 def apply_rotary_emb(x: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
@@ -82,6 +86,40 @@ class CausalSelfAttention(nn.Module):
         )
         return self.proj(y.transpose(1, 2).contiguous().reshape(bsz, seqlen, dim))
 
+    def forward_step(
+        self,
+        x: Tensor,
+        cache: tuple[Tensor, Tensor] | None,
+        position: int,
+    ) -> tuple[Tensor, tuple[Tensor, Tensor]]:
+        bsz, seqlen, dim = x.shape
+        if seqlen != 1:
+            raise ValueError("forward_step expects exactly one token")
+        q = self.c_q(x).reshape(bsz, 1, self.num_heads, self.head_dim).transpose(1, 2)
+        k = self.c_k(x).reshape(bsz, 1, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        v = self.c_v(x).reshape(bsz, 1, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        q = F.rms_norm(q, (q.size(-1),))
+        k = F.rms_norm(k, (k.size(-1),))
+        cos, sin = self.rotary.at_position(position, x.device, q.dtype)
+        q = apply_rotary_emb(q, cos, sin)
+        k = apply_rotary_emb(k, cos, sin)
+        q = q * self.q_gain.to(dtype=q.dtype)
+        if cache is None:
+            all_k, all_v = k, v
+        else:
+            prev_k, prev_v = cache
+            all_k = torch.cat((prev_k, k), dim=2)
+            all_v = torch.cat((prev_v, v), dim=2)
+        y = F.scaled_dot_product_attention(
+            q,
+            all_k,
+            all_v,
+            is_causal=False,
+            enable_gqa=(self.num_kv_heads != self.num_heads),
+        )
+        out = self.proj(y.transpose(1, 2).contiguous().reshape(bsz, 1, dim))
+        return out, (all_k, all_v)
+
 
 class MLP(nn.Module):
     def __init__(self, dim: int, mlp_mult: int):
@@ -111,6 +149,20 @@ class Block(nn.Module):
         x = x + self.attn_scale.to(dtype=x.dtype)[None, :, :] * self.attn(self.attn_norm(x))
         x = x + self.mlp_scale.to(dtype=x.dtype)[None, :, :] * self.mlp(self.mlp_norm(x))
         return x
+
+    def forward_step(
+        self,
+        x: Tensor,
+        x0: Tensor,
+        cache: tuple[Tensor, Tensor] | None,
+        position: int,
+    ) -> tuple[Tensor, tuple[Tensor, Tensor]]:
+        mix = self.resid_mix.to(dtype=x.dtype)
+        x = mix[0][None, :, :] * x + mix[1][None, :, :] * x0
+        attn_out, cache = self.attn.forward_step(self.attn_norm(x), cache, position)
+        x = x + self.attn_scale.to(dtype=x.dtype)[None, :, :] * attn_out
+        x = x + self.mlp_scale.to(dtype=x.dtype)[None, :, :] * self.mlp(self.mlp_norm(x))
+        return x, cache
 
 
 class GPT(nn.Module):
@@ -153,6 +205,41 @@ class GPT(nn.Module):
         x = self.final_norm(x)
         logits = F.linear(x, self.tok_emb.weight)
         return self.logit_softcap * torch.tanh(logits / self.logit_softcap)
+
+    def forward_logits_step(
+        self,
+        input_id: Tensor,
+        caches: list[tuple[Tensor, Tensor] | None] | None = None,
+        position: int = 0,
+    ) -> tuple[Tensor, list[tuple[Tensor, Tensor]]]:
+        if input_id.ndim == 0:
+            input_id = input_id[None]
+        if input_id.ndim != 1:
+            raise ValueError("input_id must be a scalar or 1D tensor")
+        if caches is None:
+            caches = [None] * len(self.blocks)
+        if len(caches) != len(self.blocks):
+            raise ValueError(f"Expected {len(self.blocks)} cache entries, got {len(caches)}")
+
+        x = self.tok_emb(input_id[:, None])
+        x = F.rms_norm(x, (x.size(-1),))
+        x0 = x
+        skips: list[Tensor] = []
+        new_caches: list[tuple[Tensor, Tensor]] = []
+        for i in range(self.num_encoder_layers):
+            x, cache = self.blocks[i].forward_step(x, x0, caches[i], position)
+            new_caches.append(cache)
+            skips.append(x)
+        for i in range(self.num_decoder_layers):
+            block_idx = self.num_encoder_layers + i
+            if skips:
+                x = x + self.skip_weights[i].to(dtype=x.dtype)[None, :, :] * skips.pop()
+            x, cache = self.blocks[block_idx].forward_step(x, x0, caches[block_idx], position)
+            new_caches.append(cache)
+        x = self.final_norm(x)
+        logits = F.linear(x, self.tok_emb.weight)
+        logits = self.logit_softcap * torch.tanh(logits / self.logit_softcap)
+        return logits[:, -1], new_caches
 
 
 def default_device() -> torch.device:

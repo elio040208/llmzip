@@ -23,18 +23,19 @@ Outputs:
 - compressed artifacts under `test/out/`
 - CSV summary at `test/benchmark_results.csv`
 
-`llmzip_file` includes the JSON header and byte-sidecar patch. The row also
-reports `payload_bpb` and `payload_plus_sidecar_bpb` to separate the language
-model arithmetic-coded payload from archive metadata.
+`llmzip_file` includes the compact binary header and the arithmetic-coded
+payload. The row also reports `payload_bpb` to separate the language model
+payload from archive metadata.
 
 The default benchmark is intentionally small and whitespace-normalized:
 
 - raw Gutenberg text has many blank lines, indentation, and line wraps
 - the current SentencePiece tokenizer is not byte-exact for whitespace
-- those bytes must be restored through the sidecar patch
-- a raw whitespace-heavy file would mostly measure sidecar overhead, not the
-  LLM probability model
+- llmzip now rejects inputs that do not round-trip byte-exactly through the
+  tokenizer
+- a raw whitespace-heavy file would mostly test tokenizer normalization failure,
+  not the LLM probability model
 
-For the current no-KV-cache implementation, the default generated file is 2 KiB.
-Larger files work, but `llmzip` recomputes the full context for every token and
-will be slow.
+The current implementation uses KV cache, but the Python arithmetic coder and
+full-vocabulary frequency conversion are still slow. The default generated file
+is 2 KiB so benchmark runs stay quick.
