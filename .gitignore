@@ -1,0 +1,26 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.pytest_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv
+
+# Local model artifacts
+models/*.pt
+models/*.pth
+models/*.ckpt
+models/*.safetensors
+
+# Benchmark/generated artifacts
+test/data/
+test/out/
+test/*.csv
+
+# OS/editor noise
+.DS_Store
