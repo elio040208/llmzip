@@ -36,6 +36,7 @@ class CompressRequest(BaseModel):
     text: str = ""
     total_freq: int = Field(default=1 << 20, ge=2048)
     max_context: int = Field(default=1024, ge=8)
+    trace_limit: int = Field(default=64, ge=0, le=256)
 
 
 class DecompressRequest(BaseModel):
@@ -68,13 +69,14 @@ def compress_endpoint(request: CompressRequest) -> dict:
             input_path = Path(tmp) / "input.txt"
             archive_path = Path(tmp) / "output.llmz"
             input_path.write_bytes(data)
-            compress_file(
+            meta = compress_file(
                 input_path,
                 archive_path,
                 checkpoint_path=checkpoint_path,
                 tokenizer_path=tokenizer_path,
                 total_freq=request.total_freq,
                 max_context=request.max_context,
+                trace_limit=request.trace_limit,
             )
             archive = archive_path.read_bytes()
     except Exception as exc:
@@ -85,6 +87,7 @@ def compress_endpoint(request: CompressRequest) -> dict:
         "archive_hex": hex_preview(archive),
         "archive_bytes": len(archive),
         "input_bytes": len(data),
+        "interval_trace": meta.get("interval_trace"),
     }
 
 

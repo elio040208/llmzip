@@ -32,6 +32,10 @@
               <span>Context</span>
               <input id="maxContext" type="number" min="8" step="8" value="1024" />
             </label>
+            <label>
+              <span>Trace</span>
+              <input id="traceLimit" type="number" min="0" max="256" step="8" value="64" />
+            </label>
           </div>
           <div class="actions">
             <button id="compressBtn" class="primary" type="button">Compress</button>
@@ -61,6 +65,28 @@
           <pre id="hexView" class="tab-view"></pre>
           <textarea id="base64View" class="tab-view hidden" spellcheck="false"></textarea>
         </div>
+      </section>
+
+      <section class="panel trace-panel">
+        <div class="panel-head">
+          <h2>Arithmetic Path</h2>
+          <div class="trace-stats">
+            <span id="traceTokenCount">- tokens</span>
+            <span id="tracePayloadBits">- bits</span>
+          </div>
+        </div>
+        <div class="fraction-strip">
+          <span>0</span>
+          <div class="fraction-track">
+            <div id="payloadMarker" class="payload-marker"></div>
+          </div>
+          <span>1</span>
+        </div>
+        <div class="fraction-value">
+          <span>Payload fraction</span>
+          <code id="payloadFraction">-</code>
+        </div>
+        <div id="traceRows" class="trace-rows"></div>
       </section>
 
       <section class="panel decompress-panel">

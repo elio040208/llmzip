@@ -9,6 +9,8 @@
   --accent-ink: #ffffff;
   --code-bg: #101820;
   --code-ink: #d8f3dc;
+  --segment: #27805d;
+  --marker: #c23b3b;
   --warn-bg: #fff6df;
   --warn-line: #ead28e;
 }
@@ -136,7 +138,7 @@ textarea {
 
 .controls {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
   margin-top: 10px;
 }
@@ -242,6 +244,136 @@ textarea.tab-view {
   margin-top: 16px;
 }
 
+.trace-panel {
+  margin-top: 16px;
+}
+
+.trace-stats {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.trace-stats span {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 8px;
+  background: #fff;
+}
+
+.fraction-strip {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.fraction-track {
+  position: relative;
+  height: 18px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: linear-gradient(90deg, #eef2f4, #f8fafb);
+}
+
+.payload-marker {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  background: var(--marker);
+}
+
+.fraction-value {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 8px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.fraction-value code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.trace-rows {
+  margin-top: 10px;
+  max-height: 420px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.trace-row {
+  display: grid;
+  grid-template-columns: 42px minmax(130px, 190px) minmax(180px, 1fr) 128px 78px 72px;
+  gap: 8px;
+  align-items: center;
+  min-height: 42px;
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.trace-row:last-child {
+  border-bottom: 0;
+}
+
+.trace-index,
+.trace-range,
+.trace-prob,
+.trace-bits {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.trace-token {
+  min-width: 0;
+}
+
+.trace-token code {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.trace-token span {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+}
+
+.segment-track {
+  position: relative;
+  height: 18px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #eef2f4;
+}
+
+.segment-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: 5px;
+  background: var(--segment);
+}
+
 .decompress-panel textarea {
   min-height: 180px;
 }
@@ -268,5 +400,21 @@ textarea.tab-view {
 
   .metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .controls {
+    grid-template-columns: 1fr;
+  }
+
+  .trace-row {
+    grid-template-columns: 34px minmax(0, 1fr);
+    gap: 6px 8px;
+  }
+
+  .segment-track,
+  .trace-range,
+  .trace-prob,
+  .trace-bits {
+    grid-column: 2;
   }
 }

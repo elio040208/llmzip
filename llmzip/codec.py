@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import struct
 import zlib
 from pathlib import Path
@@ -84,6 +85,43 @@ def logits_to_cumulative(logits: torch.Tensor, total_freq: int = DEFAULT_TOTAL_F
     return frequencies_to_cumulative(freqs.tolist())
 
 
+def payload_fraction(payload: bytes, prefix_bits: int = 64) -> dict:
+    bit_count = len(payload) * 8
+    if not payload:
+        return {
+            "bit_count": 0,
+            "binary": "0.0",
+            "decimal": "0",
+            "marker": 0.0,
+        }
+
+    bits = "".join(f"{byte:08b}" for byte in payload)
+    shown_bits = bits[: min(len(bits), 96)]
+    decimal_bits = bits[: min(len(bits), prefix_bits)]
+    numerator = int(decimal_bits, 2) if decimal_bits else 0
+    denominator = 1 << len(decimal_bits)
+    marker = numerator / denominator if denominator else 0.0
+    decimal = f"{marker:.18f}".rstrip("0").rstrip(".")
+    return {
+        "bit_count": bit_count,
+        "binary": f"0.{shown_bits}{'...' if len(bits) > len(shown_bits) else ''}",
+        "decimal": decimal or "0",
+        "marker": marker,
+    }
+
+
+def token_text(tokenizer: spm.SentencePieceProcessor, token: int) -> tuple[str, str]:
+    try:
+        piece = tokenizer.id_to_piece(token)
+    except Exception:
+        piece = str(token)
+    try:
+        text = tokenizer.decode([token])
+    except Exception:
+        text = piece
+    return piece, text
+
+
 class CachedLogitPredictor:
     def __init__(self, model: GPT, *, bos_id: int, max_context: int):
         self.model = model
@@ -154,6 +192,7 @@ def compress_bytes(
     tokenizer_path: str | Path,
     total_freq: int = DEFAULT_TOTAL_FREQ,
     max_context: int = DEFAULT_CONTEXT,
+    trace_limit: int = 0,
 ) -> tuple[bytes, dict, bytes]:
     text = data.decode("utf-8")
     tokens = tokenizer.encode(text, out_type=int)
@@ -171,10 +210,29 @@ def compress_bytes(
     writer = BitWriter()
     encoder = ArithmeticEncoder(writer)
     predictor = CachedLogitPredictor(model, bos_id=bos_id, max_context=max_context)
-    for token in tokens:
+    trace_tokens = []
+    for index, token in enumerate(tokens):
+        token = int(token)
         cumulative = logits_to_cumulative(predictor.next(), total_freq)
-        encoder.encode(int(token), cumulative)
-        predictor.append(int(token))
+        if index < trace_limit:
+            sym_low = int(cumulative[token])
+            sym_high = int(cumulative[token + 1])
+            freq = sym_high - sym_low
+            probability = freq / total_freq
+            piece, text_for_token = token_text(tokenizer, token)
+            trace_tokens.append({
+                "index": index,
+                "token_id": token,
+                "piece": piece,
+                "text": text_for_token,
+                "start": sym_low / total_freq,
+                "end": sym_high / total_freq,
+                "frequency": freq,
+                "probability": probability,
+                "bits": -math.log2(probability),
+            })
+        encoder.encode(token, cumulative)
+        predictor.append(token)
     payload = encoder.finish()
     header = {
         "version": 3,
@@ -184,6 +242,14 @@ def compress_bytes(
         "max_context": max_context,
         "bos_id": bos_id,
     }
+    if trace_limit:
+        header["interval_trace"] = {
+            "token_count": len(tokens),
+            "shown_count": len(trace_tokens),
+            "total_freq": total_freq,
+            "payload_fraction": payload_fraction(payload),
+            "tokens": trace_tokens,
+        }
     return payload, header, b""
 
 
@@ -262,6 +328,7 @@ def compress_file(
     tokenizer_path: str | Path,
     total_freq: int = DEFAULT_TOTAL_FREQ,
     max_context: int = DEFAULT_CONTEXT,
+    trace_limit: int = 0,
 ) -> dict:
     model = get_cached_model(checkpoint_path)
     tokenizer = get_cached_tokenizer(tokenizer_path)
@@ -274,6 +341,7 @@ def compress_file(
         tokenizer_path=tokenizer_path,
         total_freq=total_freq,
         max_context=max_context,
+        trace_limit=trace_limit,
     )
     write_archive(output_path, payload, header, sidecar)
     archive_size = Path(output_path).stat().st_size
