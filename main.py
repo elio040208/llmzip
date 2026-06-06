@@ -13,7 +13,6 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from llmzip import compress_file, decompress_file
-from llmzip.codec import read_archive
 
 
 ROOT = Path(__file__).resolve().parent
@@ -69,7 +68,7 @@ def compress_endpoint(request: CompressRequest) -> dict:
             input_path = Path(tmp) / "input.txt"
             archive_path = Path(tmp) / "output.llmz"
             input_path.write_bytes(data)
-            meta = compress_file(
+            compress_file(
                 input_path,
                 archive_path,
                 checkpoint_path=checkpoint_path,
@@ -78,8 +77,6 @@ def compress_endpoint(request: CompressRequest) -> dict:
                 max_context=request.max_context,
             )
             archive = archive_path.read_bytes()
-            _, parsed_header = read_archive(archive_path)
-            parsed_header.pop("_sidecar", None)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -88,8 +85,6 @@ def compress_endpoint(request: CompressRequest) -> dict:
         "archive_hex": hex_preview(archive),
         "archive_bytes": len(archive),
         "input_bytes": len(data),
-        "metadata": meta,
-        "parsed_header": parsed_header,
     }
 
 
@@ -105,7 +100,7 @@ def decompress_endpoint(request: DecompressRequest) -> dict:
             archive_path = Path(tmp) / "input.llmz"
             output_path = Path(tmp) / "output.txt"
             archive_path.write_bytes(archive)
-            meta = decompress_file(
+            decompress_file(
                 archive_path,
                 output_path,
                 checkpoint_path=checkpoint_path,
@@ -118,7 +113,6 @@ def decompress_endpoint(request: DecompressRequest) -> dict:
     return {
         "text": data.decode("utf-8"),
         "output_bytes": len(data),
-        "metadata": meta,
     }
 
 

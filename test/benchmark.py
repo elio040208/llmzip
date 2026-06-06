@@ -114,10 +114,7 @@ def benchmark(args: argparse.Namespace) -> list[dict]:
         "bpb": llmz_path.stat().st_size * 8 / original_size,
         "seconds": encode_seconds,
         "decode_seconds": decode_seconds,
-        "payload_bytes": llm_meta["payload_bytes"],
-        "sidecar_bytes": llm_meta["sidecar_bytes"],
         "payload_bpb": llm_meta["bpb_payload"],
-        "payload_plus_sidecar_bpb": llm_meta["bpb_payload_plus_sidecar"],
     })
 
     commands = []

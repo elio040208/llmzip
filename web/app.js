@@ -10,7 +10,6 @@ const statusBox = document.querySelector("#status");
 const metrics = document.querySelector("#metrics");
 const hexView = document.querySelector("#hexView");
 const base64View = document.querySelector("#base64View");
-const headerView = document.querySelector("#headerView");
 const decompressedText = document.querySelector("#decompressedText");
 
 const sampleText =
@@ -28,11 +27,6 @@ function setBusy(isBusy) {
   decompressBtn.disabled = isBusy;
 }
 
-function formatNumber(value, digits = 2) {
-  if (value === undefined || value === null || Number.isNaN(Number(value))) return "-";
-  return Number(value).toFixed(digits);
-}
-
 async function postJson(url, payload) {
   const response = await fetch(url, {
     method: "POST",
@@ -47,12 +41,9 @@ async function postJson(url, payload) {
 }
 
 function updateMetrics(result) {
-  const meta = result.metadata || {};
   metrics.innerHTML = `
     <div><span>Input</span><strong>${result.input_bytes ?? "-"} B</strong></div>
     <div><span>Archive</span><strong>${result.archive_bytes ?? "-"} B</strong></div>
-    <div><span>Payload BPB</span><strong>${formatNumber(meta.bpb_payload, 3)}</strong></div>
-    <div><span>File BPB</span><strong>${formatNumber(meta.bpb_file, 3)}</strong></div>
   `;
 }
 
@@ -63,7 +54,6 @@ function showTab(name) {
   const views = {
     hex: hexView,
     base64: base64View,
-    header: headerView,
   };
   Object.entries(views).forEach(([key, element]) => {
     element.classList.toggle("hidden", key !== name);
@@ -83,21 +73,13 @@ async function compress() {
     lastArchiveBase64 = result.archive_base64;
     hexView.textContent = result.archive_hex;
     base64View.value = result.archive_base64;
-    headerView.textContent = JSON.stringify(
-      {
-        parsed_header: result.parsed_header,
-        metadata: result.metadata,
-      },
-      null,
-      2,
-    );
     updateMetrics(result);
     showTab("hex");
     setStatus("Compressed");
   } catch (error) {
     setStatus("Error", true);
-    headerView.textContent = String(error.message || error);
-    showTab("header");
+    hexView.textContent = String(error.message || error);
+    showTab("hex");
   } finally {
     setBusy(false);
   }
@@ -133,7 +115,6 @@ clearBtn.addEventListener("click", () => {
   decompressedText.value = "";
   hexView.textContent = "";
   base64View.value = "";
-  headerView.textContent = "";
   lastArchiveBase64 = "";
   setStatus("Ready");
 });

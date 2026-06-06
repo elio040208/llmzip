@@ -571,17 +571,14 @@ arithmetic payload plus the shared model are enough to select them.
 
 ## Where the Archive Header Fits
 
-The compact `LLMZ2` header stores the minimum information needed to reproduce
+The compact `LLMZ3` header stores the minimum information needed to reproduce
 the arithmetic process:
 
 ```text
 token_count
-byte_count
-payload_bytes
 total_freq
 max_context
 bos_id
-logit_mode
 crc32
 ```
 
@@ -591,12 +588,9 @@ The most important arithmetic fields are:
 - `total_freq`: the same integer probability precision used by encoder
 - `max_context`: how much prefix context the model sees
 - `bos_id`: the initial token before the first real token
-- `logit_mode`: whether to reproduce KV-cache or legacy full-prefix logits
-- `payload_bytes`: where the arithmetic payload ends
 
-`crc32` and `byte_count` are checks. They are not the core arithmetic mechanism,
-but they help detect a wrong model, wrong tokenizer, corrupted payload, or
-implementation mismatch.
+`crc32` is a check. It is not the core arithmetic mechanism, but it helps detect
+a wrong model, wrong tokenizer, corrupted payload, or implementation mismatch.
 
 ## End-to-End Summary
 

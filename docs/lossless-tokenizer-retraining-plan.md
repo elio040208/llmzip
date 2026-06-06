@@ -22,7 +22,7 @@ tokenizer.decode(tokenizer.encode(text)) != text
 ```
 
 For a lossless compressor, this is unacceptable unless the archive stores an
-extra byte-sidecar patch. We intentionally removed sidecar from `LLMZ2`, so the
+extra byte-sidecar patch. We intentionally removed sidecar from `LLMZ3`, so the
 compressor now rejects non-round-tripping inputs.
 
 The permanent fix is:
