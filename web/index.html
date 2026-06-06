@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>llmzip</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <h1>llmzip</h1>
+          <p>Interactive LLM arithmetic coding demo</p>
+        </div>
+        <div class="status" id="status">Ready</div>
+      </header>
+
+      <section class="workspace">
+        <div class="panel input-panel">
+          <div class="panel-head">
+            <h2>Input Text</h2>
+            <button id="sampleBtn" type="button">Sample</button>
+          </div>
+          <textarea id="inputText" spellcheck="false">The quick brown fox jumps over the lazy dog. The quick brown fox jumps again.</textarea>
+          <div class="controls">
+            <label>
+              <span>Total freq</span>
+              <input id="totalFreq" type="number" min="2048" step="1024" value="1048576" />
+            </label>
+            <label>
+              <span>Context</span>
+              <input id="maxContext" type="number" min="8" step="8" value="1024" />
+            </label>
+          </div>
+          <div class="actions">
+            <button id="compressBtn" class="primary" type="button">Compress</button>
+            <button id="clearBtn" type="button">Clear</button>
+          </div>
+          <div class="notice">
+            This tokenizer rejects repeated spaces, leading spaces, and trailing newlines because the current format has no sidecar.
+          </div>
+        </div>
+
+        <div class="panel output-panel">
+          <div class="panel-head">
+            <h2>Compressed Archive</h2>
+            <button id="copyBase64Btn" type="button">Copy Base64</button>
+          </div>
+
+          <div class="metrics" id="metrics">
+            <div><span>Input</span><strong>-</strong></div>
+            <div><span>Archive</span><strong>-</strong></div>
+            <div><span>Payload BPB</span><strong>-</strong></div>
+            <div><span>File BPB</span><strong>-</strong></div>
+          </div>
+
+          <div class="tabs">
+            <button class="tab active" data-tab="hex" type="button">Hex</button>
+            <button class="tab" data-tab="base64" type="button">Base64</button>
+            <button class="tab" data-tab="header" type="button">Header</button>
+          </div>
+
+          <pre id="hexView" class="tab-view"></pre>
+          <textarea id="base64View" class="tab-view hidden" spellcheck="false"></textarea>
+          <pre id="headerView" class="tab-view hidden"></pre>
+        </div>
+      </section>
+
+      <section class="panel decompress-panel">
+        <div class="panel-head">
+          <h2>Decompress</h2>
+          <button id="decompressBtn" class="primary" type="button">Decompress Base64</button>
+        </div>
+        <textarea id="decompressedText" spellcheck="false" placeholder="Decompressed text appears here"></textarea>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

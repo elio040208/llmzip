@@ -25,6 +25,8 @@ LOGIT_MODE_TO_ID = {
     "kv-cache-v1": 1,
 }
 ID_TO_LOGIT_MODE = {value: key for key, value in LOGIT_MODE_TO_ID.items()}
+_MODEL_CACHE: dict[tuple[str, str], GPT] = {}
+_TOKENIZER_CACHE: dict[str, spm.SentencePieceProcessor] = {}
 
 
 def sha256_file(path: str | Path) -> str:
@@ -161,6 +163,22 @@ class LegacyLogitPredictor:
 
 def load_tokenizer(tokenizer_path: str | Path) -> spm.SentencePieceProcessor:
     return spm.SentencePieceProcessor(model_file=str(tokenizer_path))
+
+
+def get_cached_model(checkpoint_path: str | Path) -> GPT:
+    path = str(Path(checkpoint_path).resolve())
+    device = str(torch.device("cuda") if torch.cuda.is_available() else torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu"))
+    key = (path, device)
+    if key not in _MODEL_CACHE:
+        _MODEL_CACHE[key] = load_baseline_model(path)
+    return _MODEL_CACHE[key]
+
+
+def get_cached_tokenizer(tokenizer_path: str | Path) -> spm.SentencePieceProcessor:
+    path = str(Path(tokenizer_path).resolve())
+    if path not in _TOKENIZER_CACHE:
+        _TOKENIZER_CACHE[path] = load_tokenizer(path)
+    return _TOKENIZER_CACHE[path]
 
 
 def make_sidecar(source: bytes, target: bytes) -> bytes:
@@ -400,8 +418,8 @@ def compress_file(
     total_freq: int = DEFAULT_TOTAL_FREQ,
     max_context: int = DEFAULT_CONTEXT,
 ) -> dict:
-    model = load_baseline_model(checkpoint_path)
-    tokenizer = load_tokenizer(tokenizer_path)
+    model = get_cached_model(checkpoint_path)
+    tokenizer = get_cached_tokenizer(tokenizer_path)
     data = Path(input_path).read_bytes()
     payload, header, sidecar = compress_bytes(
         data,
@@ -430,8 +448,8 @@ def decompress_file(
     checkpoint_path: str | Path,
     tokenizer_path: str | Path,
 ) -> dict:
-    model = load_baseline_model(checkpoint_path)
-    tokenizer = load_tokenizer(tokenizer_path)
+    model = get_cached_model(checkpoint_path)
+    tokenizer = get_cached_tokenizer(tokenizer_path)
     payload, header = read_archive(input_path)
     if "model_sha256" in header and header.get("model_sha256") != sha256_file(checkpoint_path):
         raise ValueError("Checkpoint hash does not match archive header")

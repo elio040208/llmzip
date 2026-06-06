@@ -5,7 +5,9 @@ description = "Lossless text compression with local language models"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "fastapi>=0.115",
     "numpy>=1.26",
     "sentencepiece>=0.2.0",
     "torch>=2.8",
+    "uvicorn>=0.30",
 ]

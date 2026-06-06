@@ -14,9 +14,13 @@ tokenizer:
 ## Usage
 
 ```bash
-python main.py compress input.txt output.llmz
-python main.py decompress output.llmz restored.txt
+python main.py
 ```
+
+Then open `http://127.0.0.1:8765`.
+
+The web UI lets you enter text, compress it, inspect the compact `.llmz` archive
+as hex/base64/header metadata, and decompress the base64 archive back to text.
 
 The archive stores a compact binary header with:
 
